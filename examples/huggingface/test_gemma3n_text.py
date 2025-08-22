@@ -92,14 +92,15 @@ def main():
             from liger_kernel.transformers import apply_liger_kernel_to_gemma3n_text
 
             # Patch global classes before model load for best coverage
+            # Enable 3n-specific RoPE and fused linear+CE to exercise new paths
             apply_liger_kernel_to_gemma3n_text(
-                rope=False,  # keep HF RoPE for Gemma3n
+                rope=True,
                 cross_entropy=False,
-                fused_linear_cross_entropy=False,  # safer for Gemma3n config differences
+                fused_linear_cross_entropy=True,
                 rms_norm=True,
-                geglu=True,  # Enable GEGLU + sparse path for Gemma3n MLP
+                geglu=True,
             )
-            print("[Info] Applied Liger Gemma3n text patch (RMSNorm + MLP)")
+            print("[Info] Applied Liger Gemma3n text patch (RMSNorm + 3n-RoPE + fused CE)")
         except Exception as e:
             print("[Error] Failed to apply Liger Gemma3n text patch:", file=sys.stderr)
             print(e, file=sys.stderr)
@@ -136,14 +137,14 @@ def main():
                 target_model = model
 
             apply_liger_kernel_to_gemma3n_text(
-                rope=False,  # keep HF RoPE for Gemma3n
+                rope=True,
                 cross_entropy=False,
-                fused_linear_cross_entropy=False,
+                fused_linear_cross_entropy=True,
                 rms_norm=True,
-                geglu=True,  # Enable GEGLU + sparse path for Gemma3n MLP
+                geglu=True,
                 model=target_model,
             )
-            print("[Info] Patched Gemma3n model instance with Liger (text-only)")
+            print("[Info] Patched Gemma3n model instance with Liger (text-only, 3n-RoPE + fused CE)")
         except Exception as e:
             print("[Warn] Failed to patch Gemma3n instance:", e, file=sys.stderr)
     load_s = time.time() - t0
@@ -155,6 +156,23 @@ def main():
     print(f"[Info] Prompt: {args.prompt!r}")
     inputs = processor(text=args.prompt, return_tensors="pt")
     inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
+
+    # Optional fused CE smoke test (computes loss without logits)
+    if args.with_liger:
+        try:
+            model.train()  # fused CE path checks self.training
+            with torch.no_grad():
+                loss_out = model(
+                    **{k: v for k, v in inputs.items() if k in ("input_ids", "attention_mask")},
+                    labels=inputs["input_ids"],
+                    logits_to_keep=0,
+                )
+            if hasattr(loss_out, "loss") and loss_out.loss is not None:
+                print(f"[Info] Fused CE smoke test loss: {loss_out.loss.item():.4f}")
+        except Exception as e:
+            print("[Warn] Fused CE smoke test failed:", e, file=sys.stderr)
+        finally:
+            model.eval()
 
     print("[Info] Running generation ... (first run may include compile/warmup)")
     # Warmup forward to trigger any lazy init/compilation
