@@ -1093,7 +1093,8 @@ def apply_liger_kernel_to_gemma3n_text(
     # avoids subtle layout or masking mismatches.
 
     if rms_norm:
-        # Gemma3n RMSNorm takes `dim` arg for q_norm/k_norm just like Gemma3
+        # Gemma3n RMSNorm takes `dim` arg for q_norm/k_norm/v_norm and other norms.
+        # Keep HF constructor call-sites intact by swapping the class reference.
         modeling_gemma3n.Gemma3nRMSNorm = LigerRMSNormForGemma3
 
     # Do not override the Gemma3n MLP class globally because Gemma3n may pass
@@ -1120,7 +1121,11 @@ def apply_liger_kernel_to_gemma3n_text(
             base_model = model.model if isinstance(model, Gemma3nForCausalLM) else model
 
             if rms_norm:
+                # Model-level final norm
                 _patch_rms_norm_module_for_gemma3n(base_model.norm)
+                # Per-layer projection norm (norms the [B, T, num_layers, per_layer_dim])
+                if hasattr(base_model, "per_layer_projection_norm"):
+                    _patch_rms_norm_module_for_gemma3n(base_model.per_layer_projection_norm)
 
             for decoder_layer in base_model.layers:
                 decoder_layer: Gemma3nTextDecoderLayer
@@ -1136,6 +1141,9 @@ def apply_liger_kernel_to_gemma3n_text(
                         _patch_rms_norm_module_for_gemma3n(decoder_layer.pre_feedforward_layernorm)
                     if hasattr(decoder_layer, "post_feedforward_layernorm"):
                         _patch_rms_norm_module_for_gemma3n(decoder_layer.post_feedforward_layernorm)
+                    # Post per-layer input norm on the residual branch
+                    if hasattr(decoder_layer, "post_per_layer_input_norm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.post_per_layer_input_norm)
                     # q_norm/k_norm are Gemma-style RMSNorms
                     if hasattr(decoder_layer, "self_attn") and hasattr(decoder_layer.self_attn, "q_norm"):
                         _patch_rms_norm_module_for_gemma3n(decoder_layer.self_attn.q_norm)
@@ -1144,6 +1152,11 @@ def apply_liger_kernel_to_gemma3n_text(
                     # Gemma3n also normalizes value states; patch v_norm if present
                     if hasattr(decoder_layer, "self_attn") and hasattr(decoder_layer.self_attn, "v_norm"):
                         _patch_rms_norm_module_for_gemma3n(decoder_layer.self_attn.v_norm)
+                    # AltUp and Laurel norms
+                    if hasattr(decoder_layer, "altup") and hasattr(decoder_layer.altup, "router_norm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.altup.router_norm)
+                    if hasattr(decoder_layer, "laurel") and hasattr(decoder_layer.laurel, "post_laurel_norm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.laurel.post_laurel_norm)
 
         else:
             raise TypeError("The model must be Gemma3nForCausalLM.")

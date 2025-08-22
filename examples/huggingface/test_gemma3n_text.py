@@ -99,7 +99,7 @@ def main():
                 rms_norm=True,
                 geglu=False,  # Gemma3n MLP is not GEGLU; do not patch
             )
-            print("[Info] Applied Liger Gemma3n text patch (RoPE, RMSNorm)")
+            print("[Info] Applied Liger Gemma3n text patch (RMSNorm-only)")
         except Exception as e:
             print("[Error] Failed to apply Liger Gemma3n text patch:", file=sys.stderr)
             print(e, file=sys.stderr)
@@ -107,6 +107,13 @@ def main():
 
     print(f"[Info] Loading model: {args.model_id}")
     t0 = time.time()
+    # Enable TF32 on Ampere+ for faster matmuls when using float32
+    if device == "cuda":
+        try:
+            torch.set_float32_matmul_precision("high")
+        except Exception:
+            pass
+
     model = AutoModelForCausalLM.from_pretrained(
         args.model_id,
         torch_dtype=dtype,
