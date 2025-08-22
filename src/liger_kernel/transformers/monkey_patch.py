@@ -12,7 +12,7 @@ from transformers import PreTrainedModel
 
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.functional import liger_cross_entropy
-from liger_kernel.transformers.geglu import LigerGEGLUMLP
+from liger_kernel.transformers.geglu import LigerGEGLUMLP, liger_geglu_sparse_forward
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
 from liger_kernel.transformers.model.gemma import lce_forward_deprecated as gemma_lce_forward_deprecated
@@ -1174,14 +1174,20 @@ def apply_liger_kernel_to_gemma3n_text(
 
             for idx, decoder_layer in enumerate(base_model.layers):
                 decoder_layer: Gemma3nTextDecoderLayer
-                # Patch MLP forward with Liger fused GELU*Mul only when layer has no activation sparsity.
+                # Patch MLP forward for all layers: use dense fused path when sparsity==0,
+                # and sparse path when sparsity>0.
                 if geglu:
                     try:
                         sparsity = 0.0
                         if isinstance(sparsity_pattern, (list, tuple)) and idx < len(sparsity_pattern):
                             sparsity = float(sparsity_pattern[idx])
-                        if sparsity == 0.0 and hasattr(decoder_layer, "mlp"):
-                            _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+                        if hasattr(decoder_layer, "mlp"):
+                            if sparsity == 0.0:
+                                _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+                            else:
+                                # Set per-layer sparsity attribute for sparse forward
+                                setattr(decoder_layer.mlp, "activation_sparsity", sparsity)
+                                _bind_method_to_module(decoder_layer.mlp, "forward", liger_geglu_sparse_forward)
                     except Exception:
                         # Be conservative; skip if anything unexpected
                         pass

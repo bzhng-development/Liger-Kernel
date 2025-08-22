@@ -97,7 +97,7 @@ def main():
                 cross_entropy=False,
                 fused_linear_cross_entropy=False,  # safer for Gemma3n config differences
                 rms_norm=True,
-                geglu=False,  # Gemma3n MLP is not GEGLU; do not patch
+                geglu=True,  # Enable GEGLU + sparse path for Gemma3n MLP
             )
             print("[Info] Applied Liger Gemma3n text patch (RMSNorm-only)")
         except Exception as e:
@@ -140,7 +140,7 @@ def main():
                 cross_entropy=False,
                 fused_linear_cross_entropy=False,
                 rms_norm=True,
-                geglu=False,  # Gemma3n MLP is not GEGLU; do not patch
+                geglu=True,  # Enable GEGLU + sparse path for Gemma3n MLP
                 model=target_model,
             )
             print("[Info] Patched Gemma3n model instance with Liger (text-only)")

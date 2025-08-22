@@ -1,6 +1,8 @@
+import torch
 import torch.nn as nn
 
 from liger_kernel.ops.geglu import LigerGELUMulFunction
+from liger_kernel.ops.geglu_sparse import gelu_and_mul_sparse
 
 
 class LigerGEGLUMLP(nn.Module):
@@ -20,3 +22,31 @@ class LigerGEGLUMLP(nn.Module):
 
     def forward(self, x):
         return self.down_proj(LigerGELUMulFunction.apply(self.gate_proj(x), self.up_proj(x)))
+
+
+def liger_geglu_sparse_forward(self, x):
+    """
+    Sparse GEGLU forward that respects `self.activation_sparsity` per-layer.
+
+    Semantics mirror Gemma3n's GeluAndMulSparse:
+      gate = gate_proj(x)
+      up   = up_proj(x)
+      gate = gaussian_topk(gate)  # sparsity via Gaussian percentile cutoff per token
+      act  = GELU(gate, approximate='tanh')
+      out  = down_proj(act * up)
+
+    Assumptions:
+    - `self` exposes Linear layers: `gate_proj`, `up_proj`, `down_proj`.
+    - `self.activation_sparsity` is a float in [0, 1). For example, 0.95 zeros ~95% of gate features.
+    """
+    sparsity = float(getattr(self, "activation_sparsity", 0.0))
+    if sparsity <= 0.0:
+        # Fallback to dense path using fused tanh-GELU*Mul
+        return self.down_proj(LigerGELUMulFunction.apply(self.gate_proj(x), self.up_proj(x)))
+
+    gate = self.gate_proj(x)
+    up = self.up_proj(x)
+    # Concatenate [gate, up] along feature dim for the op API
+    concat = torch.cat([gate, up], dim=-1)
+    h = gelu_and_mul_sparse(concat, activation_sparsity=sparsity, approximate="tanh")
+    return self.down_proj(h)
