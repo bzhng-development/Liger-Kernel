@@ -994,6 +994,7 @@ def apply_liger_kernel_to_gemma3_text(
     from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
     from transformers.models.gemma3.modeling_gemma3 import Gemma3TextModel
 
+    from liger_kernel.transformers.gema3_rms import LigerRMSNormForGemma3n
     from liger_kernel.transformers.model.gemma3 import causal_forward
     from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma3
 
@@ -1084,18 +1085,52 @@ def apply_liger_kernel_to_gemma3n_text(
     from liger_kernel.transformers.gema3_rms import LigerRMSNormForGemma3
     from liger_kernel.transformers.model.gemma3 import causal_forward
 
-    _patch_rms_norm_module_for_gemma3n = partial(
-        _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
-    )
+    # Custom patcher for Gemma3n that respects no-scale norms (e.g., v_norm)
+    def _patch_rms_norm_module_for_gemma3n(module, eps=1e-6, casting_mode="gemma", in_place=False):
+        try:
+            import torch.nn as nn
+            has_parameter = isinstance(getattr(module, "weight", None), nn.Parameter)
+        except Exception:
+            has_parameter = True
+        # Use offset=0.0 for standard RMSNorm; offset=1.0 for no-scale norms
+        offset = 0.0 if has_parameter else 1.0
+        # Bind methods and attributes similar to _patch_rms_norm_module
+        if PEFT_AVAILABLE and isinstance(module, peft.utils.other.ModulesToSaveWrapper):
+            module.modules_to_save.default.offset = offset
+            module.modules_to_save.default.casting_mode = casting_mode
+            module.modules_to_save.default.variance_epsilon = (
+                getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+            )
+            module.modules_to_save.default.in_place = in_place
+            module.original_module.offset = offset
+            module.original_module.casting_mode = casting_mode
+            module.original_module.variance_epsilon = (
+                getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+            )
+            module.original_module.in_place = in_place
+            _bind_method_to_module(module.modules_to_save.default, "forward", LigerRMSNorm.forward)
+            _bind_method_to_module(module.modules_to_save.default, "extra_repr", LigerRMSNorm.extra_repr)
+            _bind_method_to_module(module.original_module, "forward", LigerRMSNorm.forward)
+            _bind_method_to_module(module.original_module, "extra_repr", LigerRMSNorm.extra_repr)
+            module.modules_to_save.default.__class__.__name__ = LigerRMSNorm.__name__
+            module.original_module.__class__.__name__ = LigerRMSNorm.__name__
+        else:
+            module.offset = offset
+            module.casting_mode = casting_mode
+            module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+            module.in_place = in_place
+            _bind_method_to_module(module, "forward", LigerRMSNorm.forward)
+            _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
+            module.__class__.__name__ = LigerRMSNorm.__name__
 
     # Do NOT patch RoPE for Gemma3n. Gemma3n uses both global and local RoPE
     # with its own layout and masking. Keeping the original implementation
     # avoids subtle layout or masking mismatches.
 
     if rms_norm:
-        # Gemma3n RMSNorm takes `dim` arg for q_norm/k_norm/v_norm and other norms.
-        # Keep HF constructor call-sites intact by swapping the class reference.
-        modeling_gemma3n.Gemma3nRMSNorm = LigerRMSNormForGemma3
+        # Gemma3n: standard RMSNorm for learnable scales (offset=0.0) and
+        # unit-scale for no-scale norms (offset=1.0 with zero buffer).
+        modeling_gemma3n.Gemma3nRMSNorm = LigerRMSNormForGemma3n
 
     # Do not override the Gemma3n MLP class globally because Gemma3n may pass
     # per-layer settings (e.g., intermediate_size lists or layer_idx) to the MLP constructor.
