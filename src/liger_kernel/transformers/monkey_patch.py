@@ -1088,21 +1088,9 @@ def apply_liger_kernel_to_gemma3n_text(
         _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
     )
 
-    if rope:
-        # Gemma3n's apply_rotary_pos_emb is called with x shaped (bsz, seq_len, n_heads, head_dim)
-        # and returns the rotated tensor with the same shape. Liger expects inputs as
-        # (bsz, n_heads, seq_len, head_dim). Provide a safe adapter.
-        def _liger_rotary_pos_emb_gemma3n(x, cos, sin, position_ids=None, unsqueeze_dim=2):
-            # Reorder to Liger's expected layout
-            x_q = x.permute(0, 2, 1, 3)
-            x_k = x_q.clone()  # avoid in-place aliasing
-            q_out, _ = liger_rotary_pos_emb(
-                x_q, x_k, cos, sin, position_ids=position_ids, unsqueeze_dim=2
-            )
-            # Restore original layout
-            return q_out.permute(0, 2, 1, 3)
-
-        modeling_gemma3n.apply_rotary_pos_emb = _liger_rotary_pos_emb_gemma3n
+    # Do NOT patch RoPE for Gemma3n. Gemma3n uses both global and local RoPE
+    # with its own layout and masking. Keeping the original implementation
+    # avoids subtle layout or masking mismatches.
 
     if rms_norm:
         # Gemma3n RMSNorm takes `dim` arg for q_norm/k_norm just like Gemma3

@@ -93,7 +93,7 @@ def main():
 
             # Patch global classes before model load for best coverage
             apply_liger_kernel_to_gemma3n_text(
-                rope=True,
+                rope=False,  # keep HF RoPE for Gemma3n
                 cross_entropy=False,
                 fused_linear_cross_entropy=False,  # safer for Gemma3n config differences
                 rms_norm=True,
@@ -129,7 +129,7 @@ def main():
                 target_model = model
 
             apply_liger_kernel_to_gemma3n_text(
-                rope=True,
+                rope=False,  # keep HF RoPE for Gemma3n
                 cross_entropy=False,
                 fused_linear_cross_entropy=False,
                 rms_norm=True,
