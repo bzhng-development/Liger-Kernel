@@ -969,7 +969,7 @@ def apply_liger_kernel_to_gemma3_text(
     rms_norm: bool = True,
     geglu: bool = True,
     model: PreTrainedModel = None,
-) -> None:
+    ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Gemma3
 
@@ -1047,6 +1047,97 @@ def apply_liger_kernel_to_gemma3_text(
 
         else:
             raise TypeError("The model must be Gemma3ForCausalLM.")
+
+
+def apply_liger_kernel_to_gemma3n_text(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    geglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Gemma3n (text-only).
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    # Import Gemma3n components from transformers if available
+    from transformers.models.gemma3n import modeling_gemma3n
+    from transformers.models.gemma3n.modeling_gemma3n import Gemma3nDecoderLayer
+    from transformers.models.gemma3n.modeling_gemma3n import Gemma3nForCausalLM, Gemma3nTextModel
+
+    from liger_kernel.transformers.gema3_rms import LigerRMSNormForGemma3
+    from liger_kernel.transformers.model.gemma3 import causal_forward
+
+    _patch_rms_norm_module_for_gemma3n = partial(
+        _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
+    )
+
+    if rope:
+        modeling_gemma3n.apply_rotary_pos_emb = liger_rotary_pos_emb
+
+    if rms_norm:
+        # Gemma3n RMSNorm takes `dim` arg for q_norm/k_norm just like Gemma3
+        modeling_gemma3n.Gemma3nRMSNorm = LigerRMSNormForGemma3
+
+    if geglu:
+        modeling_gemma3n.Gemma3nMLP = LigerGEGLUMLP
+
+    # Handle loss function
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if fused_linear_cross_entropy:
+        modeling_gemma3n.Gemma3nForCausalLM.forward = causal_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        if isinstance(model, Gemma3nForCausalLM) or isinstance(model, Gemma3nTextModel):
+            # get the base model from the model instance
+            base_model = model.model if isinstance(model, Gemma3nForCausalLM) else model
+
+            if rms_norm:
+                _patch_rms_norm_module_for_gemma3n(base_model.norm)
+
+            for decoder_layer in base_model.layers:
+                decoder_layer: Gemma3nDecoderLayer
+                if geglu:
+                    _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+                if rms_norm:
+                    _patch_rms_norm_module_for_gemma3n(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module_for_gemma3n(decoder_layer.post_attention_layernorm)
+                    # Pre/post FFN norms may exist depending on variant; patch if present
+                    if hasattr(decoder_layer, "pre_feedforward_layernorm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.pre_feedforward_layernorm)
+                    if hasattr(decoder_layer, "post_feedforward_layernorm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.post_feedforward_layernorm)
+                    # q_norm/k_norm are Gemma-style RMSNorms
+                    if hasattr(decoder_layer, "self_attn") and hasattr(decoder_layer.self_attn, "q_norm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.self_attn.q_norm)
+                    if hasattr(decoder_layer, "self_attn") and hasattr(decoder_layer.self_attn, "k_norm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.self_attn.k_norm)
+
+        else:
+            raise TypeError("The model must be Gemma3nForCausalLM.")
 
 
 def apply_liger_kernel_to_gemma3(
