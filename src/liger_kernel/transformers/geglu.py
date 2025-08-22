@@ -3,6 +3,11 @@ import torch.nn as nn
 
 from liger_kernel.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.geglu_sparse import gelu_and_mul_sparse
+try:
+    from liger_kernel.ops.geglu_sparse_triton import geglu_sparse_forward as _triton_geglu_sparse_forward
+    _HAS_TRITON_SPARSE = True
+except Exception:
+    _HAS_TRITON_SPARSE = False
 
 
 class LigerGEGLUMLP(nn.Module):
@@ -47,6 +52,10 @@ def liger_geglu_sparse_forward(self, x):
     gate = self.gate_proj(x)
     up = self.up_proj(x)
     # Concatenate [gate, up] along feature dim for the op API
-    concat = torch.cat([gate, up], dim=-1)
-    h = gelu_and_mul_sparse(concat, activation_sparsity=sparsity, approximate="tanh")
+    if _HAS_TRITON_SPARSE:
+        h = _triton_geglu_sparse_forward(gate, up, sparsity, approximate="tanh")
+    else:
+        # Fallback to pure PyTorch reference
+        concat = torch.cat([gate, up], dim=-1)
+        h = gelu_and_mul_sparse(concat, activation_sparsity=sparsity, approximate="tanh")
     return self.down_proj(h)
