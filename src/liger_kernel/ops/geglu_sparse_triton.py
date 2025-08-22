@@ -25,7 +25,7 @@ def _sparse_geglu_forward_kernel(
     out_ptr,   # *[n_rows, n_cols]
     stride,    # row stride in elements
     n_cols: tl.constexpr,
-    std_mult,  # scalar float32
+    std_mult: tl.constexpr,  # scalar float32 compile-time constant
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = tl.program_id(0).to(tl.int64)
@@ -69,7 +69,7 @@ def _sparse_geglu_forward_kernel(
         t = tanh(t)
         act = 0.5 * x * (1.0 + t)
 
-        h = act.cast(u.dtype) * u
+        h = act.to(u.dtype) * u
         tl.store(out_row + idx, h, mask=mask)
 
 
@@ -98,7 +98,10 @@ class LigerGELUSparseMulFunction(torch.autograd.Function):
         n_rows = gate_2d.shape[0]
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
-        std_mult = _icdf_std_multiplier(float(sparsity), gate_2d.device).to(torch.float32)
+        # Compute Gaussian cutoff multiplier on host and pass as a Python float
+        # to avoid Triton treating it as a pointer when passed as a tensor.
+        std_mult_t = _icdf_std_multiplier(float(sparsity), gate_2d.device).to(torch.float32)
+        std_mult = float(std_mult_t.item())
 
         _sparse_geglu_forward_kernel[(n_rows,)](
             gate_2d,
@@ -150,4 +153,3 @@ class LigerGELUSparseMulFunction(torch.autograd.Function):
 
 def geglu_sparse_forward(gate: torch.Tensor, up: torch.Tensor, sparsity: float, approximate: str = "tanh") -> torch.Tensor:
     return LigerGELUSparseMulFunction.apply(gate, up, sparsity, approximate)
-
