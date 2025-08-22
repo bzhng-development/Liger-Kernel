@@ -1052,9 +1052,9 @@ def apply_liger_kernel_to_gemma3_text(
 def apply_liger_kernel_to_gemma3n_text(
     rope: bool = True,
     cross_entropy: bool = False,
-    fused_linear_cross_entropy: bool = True,
+    fused_linear_cross_entropy: bool = False,
     rms_norm: bool = True,
-    geglu: bool = True,
+    geglu: bool = False,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -1116,7 +1116,9 @@ def apply_liger_kernel_to_gemma3n_text(
         nn.functional.cross_entropy = liger_cross_entropy
 
     if fused_linear_cross_entropy:
-        modeling_gemma3n.Gemma3nForCausalLM.forward = causal_forward
+        # Gemma3n has a different forward signature and config nesting than Gemma3.
+        # Avoid patching to Gemma3's causal_forward to prevent subtle errors.
+        logger.warning("fused_linear_cross_entropy is not supported for Gemma3n; ignoring this option.")
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -1148,6 +1150,9 @@ def apply_liger_kernel_to_gemma3n_text(
                         _patch_rms_norm_module_for_gemma3n(decoder_layer.self_attn.q_norm)
                     if hasattr(decoder_layer, "self_attn") and hasattr(decoder_layer.self_attn, "k_norm"):
                         _patch_rms_norm_module_for_gemma3n(decoder_layer.self_attn.k_norm)
+                    # Gemma3n also normalizes value states; patch v_norm if present
+                    if hasattr(decoder_layer, "self_attn") and hasattr(decoder_layer.self_attn, "v_norm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.self_attn.v_norm)
 
         else:
             raise TypeError("The model must be Gemma3nForCausalLM.")
