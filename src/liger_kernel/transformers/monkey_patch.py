@@ -1055,7 +1055,7 @@ def apply_liger_kernel_to_gemma3n_text(
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = False,
     rms_norm: bool = True,
-    geglu: bool = False,
+    geglu: bool = True,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -1134,7 +1134,8 @@ def apply_liger_kernel_to_gemma3n_text(
 
     # Do not override the Gemma3n MLP class globally because Gemma3n may pass
     # per-layer settings (e.g., intermediate_size lists or layer_idx) to the MLP constructor.
-    # We instead patch the instance's `mlp.forward` below to use the Liger kernel.
+    # We instead patch the instance's `mlp.forward` below to use the Liger kernel when
+    # activation sparsity is disabled for that layer.
 
     # Handle loss function
     if cross_entropy:
@@ -1162,9 +1163,28 @@ def apply_liger_kernel_to_gemma3n_text(
                 if hasattr(base_model, "per_layer_projection_norm"):
                     _patch_rms_norm_module_for_gemma3n(base_model.per_layer_projection_norm)
 
-            for decoder_layer in base_model.layers:
+            # Try to fetch activation sparsity pattern
+            sparsity_pattern = None
+            try:
+                sparsity_pattern = getattr(base_model.config, "activation_sparsity_pattern", None)
+                if sparsity_pattern is None and hasattr(base_model.config, "text_config"):
+                    sparsity_pattern = getattr(base_model.config.text_config, "activation_sparsity_pattern", None)
+            except Exception:
+                sparsity_pattern = None
+
+            for idx, decoder_layer in enumerate(base_model.layers):
                 decoder_layer: Gemma3nTextDecoderLayer
-                # Do not patch MLP for Gemma3n: it is not a standard GEGLU MLP.
+                # Patch MLP forward with Liger fused GELU*Mul only when layer has no activation sparsity.
+                if geglu:
+                    try:
+                        sparsity = 0.0
+                        if isinstance(sparsity_pattern, (list, tuple)) and idx < len(sparsity_pattern):
+                            sparsity = float(sparsity_pattern[idx])
+                        if sparsity == 0.0 and hasattr(decoder_layer, "mlp"):
+                            _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+                    except Exception:
+                        # Be conservative; skip if anything unexpected
+                        pass
                 if rms_norm:
                     # Common Gemma-style names
                     if hasattr(decoder_layer, "input_layernorm"):
