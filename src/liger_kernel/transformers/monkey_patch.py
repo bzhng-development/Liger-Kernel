@@ -1095,8 +1095,9 @@ def apply_liger_kernel_to_gemma3n_text(
         # Gemma3n RMSNorm takes `dim` arg for q_norm/k_norm just like Gemma3
         modeling_gemma3n.Gemma3nRMSNorm = LigerRMSNormForGemma3
 
-    if geglu:
-        modeling_gemma3n.Gemma3nMLP = LigerGEGLUMLP
+    # Do not override the Gemma3n MLP class globally because Gemma3n may pass
+    # per-layer settings (e.g., intermediate_size lists or layer_idx) to the MLP constructor.
+    # We instead patch the instance's `mlp.forward` below to use the Liger kernel.
 
     # Handle loss function
     if cross_entropy:

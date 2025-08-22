@@ -95,7 +95,7 @@ def main():
             apply_liger_kernel_to_gemma3n_text(
                 rope=True,
                 cross_entropy=False,
-                fused_linear_cross_entropy=True,
+                fused_linear_cross_entropy=False,  # safer for Gemma3n config differences
                 rms_norm=True,
                 geglu=True,
             )
@@ -114,6 +114,22 @@ def main():
         token=hf_token,
     )
     model.to(device)
+    # If Liger patching is requested, patch the loaded instance to ensure MLP forward binding
+    if args.with_liger:
+        try:
+            from liger_kernel.transformers import apply_liger_kernel_to_gemma3n_text
+
+            apply_liger_kernel_to_gemma3n_text(
+                rope=True,
+                cross_entropy=False,
+                fused_linear_cross_entropy=False,
+                rms_norm=True,
+                geglu=True,
+                model=model,
+            )
+            print("[Info] Patched Gemma3n model instance with Liger (text-only)")
+        except Exception as e:
+            print("[Warn] Failed to patch Gemma3n instance:", e, file=sys.stderr)
     load_s = time.time() - t0
     print(f"[Info] Model loaded in {load_s:.2f}s on {device} with dtype {dtype}.")
 
@@ -161,4 +177,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
