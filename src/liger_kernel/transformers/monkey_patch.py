@@ -1097,7 +1097,7 @@ def apply_liger_kernel_to_gemma3n_text(
             x_q = x.permute(0, 2, 1, 3)
             x_k = x_q.clone()  # avoid in-place aliasing
             q_out, _ = liger_rotary_pos_emb(
-                x_q, x_k, cos, sin, position_ids=position_ids, unsqueeze_dim=1
+                x_q, x_k, cos, sin, position_ids=position_ids, unsqueeze_dim=2
             )
             # Restore original layout
             return q_out.permute(0, 2, 1, 3)
