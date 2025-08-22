@@ -99,7 +99,7 @@ def main():
                 rms_norm=True,
                 geglu=False,  # Gemma3n MLP is not GEGLU; do not patch
             )
-            print("[Info] Applied Liger Gemma3n text patch (RoPE, RMSNorm, GeGLU)")
+            print("[Info] Applied Liger Gemma3n text patch (RoPE, RMSNorm)")
         except Exception as e:
             print("[Error] Failed to apply Liger Gemma3n text patch:", file=sys.stderr)
             print(e, file=sys.stderr)

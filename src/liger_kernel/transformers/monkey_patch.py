@@ -1089,15 +1089,18 @@ def apply_liger_kernel_to_gemma3n_text(
     )
 
     if rope:
-        # Gemma3n's apply_rotary_pos_emb is called with a single tensor:
-        #   apply_rotary_pos_emb(x, cos, sin, position_ids=None, unsqueeze_dim=2)
-        # Liger's kernel expects (q, k, cos, sin, position_ids=None, unsqueeze_dim=1).
-        # Provide a thin adapter that applies RoPE to a single tensor and returns it.
-        # Important: avoid aliasing q and k to the same tensor to prevent in-place overwrites.
+        # Gemma3n's apply_rotary_pos_emb is called with x shaped (bsz, seq_len, n_heads, head_dim)
+        # and returns the rotated tensor with the same shape. Liger expects inputs as
+        # (bsz, n_heads, seq_len, head_dim). Provide a safe adapter.
         def _liger_rotary_pos_emb_gemma3n(x, cos, sin, position_ids=None, unsqueeze_dim=2):
-            k_tmp = x.clone()
-            q_out, _ = liger_rotary_pos_emb(x, k_tmp, cos, sin, position_ids=position_ids, unsqueeze_dim=unsqueeze_dim)
-            return q_out
+            # Reorder to Liger's expected layout
+            x_q = x.permute(0, 2, 1, 3)
+            x_k = x_q.clone()  # avoid in-place aliasing
+            q_out, _ = liger_rotary_pos_emb(
+                x_q, x_k, cos, sin, position_ids=position_ids, unsqueeze_dim=1
+            )
+            # Restore original layout
+            return q_out.permute(0, 2, 1, 3)
 
         modeling_gemma3n.apply_rotary_pos_emb = _liger_rotary_pos_emb_gemma3n
 
