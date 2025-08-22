@@ -994,9 +994,8 @@ def apply_liger_kernel_to_gemma3_text(
     from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
     from transformers.models.gemma3.modeling_gemma3 import Gemma3TextModel
 
-    from liger_kernel.transformers.gema3_rms import LigerRMSNormForGemma3
-    from liger_kernel.transformers.model.gemma3 import causal_forward
     from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma3
+    from liger_kernel.transformers.model.gemma3 import causal_forward
 
     _patch_rms_norm_module_for_gemma3 = partial(
         _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
@@ -1082,7 +1081,7 @@ def apply_liger_kernel_to_gemma3n_text(
     from transformers.models.gemma3n.modeling_gemma3n import Gemma3nTextDecoderLayer
     from transformers.models.gemma3n.modeling_gemma3n import Gemma3nForCausalLM, Gemma3nTextModel
 
-    from liger_kernel.transformers.gema3_rms import LigerRMSNormForGemma3n
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma3n
     from liger_kernel.transformers.model.gemma3 import causal_forward
 
     # Custom patcher for Gemma3n that respects no-scale norms (e.g., v_norm)

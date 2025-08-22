@@ -65,6 +65,53 @@ class LigerRMSNormForGemma3(LigerRMSNorm):
         super().__init__(dim, eps, offset, casting_mode, init_fn, in_place)
 
 
+class LigerRMSNormForGemma3n(LigerRMSNorm):
+    """
+    Gemma3n RMSNorm shim.
+
+    Semantics:
+    - Learnable-scale norms use standard RMSNorm with offset=0.0 and gamma initialized to ones.
+    - No-scale norms (e.g., v_norm) should have effective gamma == 1.0 without training:
+      implemented by offset=1.0 with a zero buffer replacing the weight Parameter.
+
+    Accepts `dim` to match HF Gemma3n constructors.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        eps: float = 1e-6,
+        casting_mode: str = "gemma",
+        in_place: bool = False,
+        with_scale: bool = True,
+    ):
+        if with_scale:
+            # Standard RMSNorm: gamma initialized to ones, no offset.
+            super().__init__(
+                hidden_size=dim,
+                eps=eps,
+                offset=0.0,
+                casting_mode=casting_mode,
+                init_fn="ones",
+                in_place=in_place,
+            )
+        else:
+            # Keep unit scale: offset=1.0 and non-trainable zero buffer for weight.
+            super().__init__(
+                hidden_size=dim,
+                eps=eps,
+                offset=1.0,
+                casting_mode=casting_mode,
+                init_fn="zeros",
+                in_place=in_place,
+            )
+            try:
+                delattr(self, "weight")
+            except Exception:
+                pass
+            self.register_buffer("weight", torch.zeros(dim), persistent=False)
+
+
 class LigerRMSNormForOlmo2(LigerRMSNorm):
     def __init__(
         self, hidden_size, eps=1e-6, offset=0.0, casting_mode="llama", init_fn="ones", in_place=False, row_mode=None

@@ -9,6 +9,8 @@ from liger_kernel.transformers.fused_add_rms_norm import LigerFusedAddRMSNorm  #
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss  # noqa: F401
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD  # noqa: F401
 from liger_kernel.transformers.geglu import LigerGEGLUMLP  # noqa: F401
+from liger_kernel.ops.geglu_sparse import LigerGELUMulSparse  # noqa: F401
+from liger_kernel.ops.geglu_sparse import gelu_and_mul_sparse  # noqa: F401
 from liger_kernel.transformers.jsd import LigerJSD  # noqa: F401
 from liger_kernel.transformers.kl_div import LigerKLDIVLoss  # noqa: F401
 from liger_kernel.transformers.layer_norm import LigerLayerNorm  # noqa: F401
@@ -130,6 +132,8 @@ __all__ = [
     "LigerFusedLinearCrossEntropyLoss",
     "LigerFusedLinearJSD",
     "LigerGEGLUMLP",
+    "LigerGELUMulSparse",
+    "gelu_and_mul_sparse",
     "LigerJSD",
     "LigerLayerNorm",
     "LigerFusedAddRMSNorm",

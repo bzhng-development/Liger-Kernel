@@ -99,7 +99,7 @@ def main():
                 rms_norm=True,
                 geglu=True,  # Enable GEGLU + sparse path for Gemma3n MLP
             )
-            print("[Info] Applied Liger Gemma3n text patch (RMSNorm-only)")
+            print("[Info] Applied Liger Gemma3n text patch (RMSNorm + MLP)")
         except Exception as e:
             print("[Error] Failed to apply Liger Gemma3n text patch:", file=sys.stderr)
             print(e, file=sys.stderr)
