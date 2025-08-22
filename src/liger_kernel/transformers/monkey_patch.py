@@ -1093,8 +1093,10 @@ def apply_liger_kernel_to_gemma3n_text(
         #   apply_rotary_pos_emb(x, cos, sin, position_ids=None, unsqueeze_dim=2)
         # Liger's kernel expects (q, k, cos, sin, position_ids=None, unsqueeze_dim=1).
         # Provide a thin adapter that applies RoPE to a single tensor and returns it.
+        # Important: avoid aliasing q and k to the same tensor to prevent in-place overwrites.
         def _liger_rotary_pos_emb_gemma3n(x, cos, sin, position_ids=None, unsqueeze_dim=2):
-            q_out, _ = liger_rotary_pos_emb(x, x, cos, sin, position_ids=position_ids, unsqueeze_dim=unsqueeze_dim)
+            k_tmp = x.clone()
+            q_out, _ = liger_rotary_pos_emb(x, k_tmp, cos, sin, position_ids=position_ids, unsqueeze_dim=unsqueeze_dim)
             return q_out
 
         modeling_gemma3n.apply_rotary_pos_emb = _liger_rotary_pos_emb_gemma3n
@@ -1129,8 +1131,7 @@ def apply_liger_kernel_to_gemma3n_text(
 
             for decoder_layer in base_model.layers:
                 decoder_layer: Gemma3nTextDecoderLayer
-                if geglu and hasattr(decoder_layer, "mlp"):
-                    _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+                # Do not patch MLP for Gemma3n: it is not a standard GEGLU MLP.
                 if rms_norm:
                     # Common Gemma-style names
                     if hasattr(decoder_layer, "input_layernorm"):
