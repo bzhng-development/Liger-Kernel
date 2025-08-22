@@ -1082,7 +1082,8 @@ def apply_liger_kernel_to_gemma3n_text(
     from transformers.models.gemma3n.modeling_gemma3n import Gemma3nForCausalLM, Gemma3nTextModel
 
     from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma3n
-    from liger_kernel.transformers.model.gemma3 import causal_forward
+    from liger_kernel.transformers.model.gemma3n import causal_forward as gemma3n_lce_forward
+    from liger_kernel.transformers.rope import liger_gemma3n_apply_rotary_pos_emb
 
     # Custom patcher for Gemma3n that respects no-scale norms (e.g., v_norm)
     def _patch_rms_norm_module_for_gemma3n(module, eps=1e-6, casting_mode="gemma", in_place=False):
@@ -1122,9 +1123,10 @@ def apply_liger_kernel_to_gemma3n_text(
             _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
             module.__class__.__name__ = LigerRMSNorm.__name__
 
-    # Do NOT patch RoPE for Gemma3n. Gemma3n uses both global and local RoPE
-    # with its own layout and masking. Keeping the original implementation
-    # avoids subtle layout or masking mismatches.
+    # Optionally patch RoPE for Gemma3n with a wrapper that preserves
+    # Gemma3n's broadcasting semantics while using Liger's fused kernel.
+    if rope:
+        modeling_gemma3n.apply_rotary_pos_emb = liger_gemma3n_apply_rotary_pos_emb
 
     if rms_norm:
         # Gemma3n: standard RMSNorm for learnable scales (offset=0.0) and
@@ -1143,9 +1145,9 @@ def apply_liger_kernel_to_gemma3n_text(
         nn.functional.cross_entropy = liger_cross_entropy
 
     if fused_linear_cross_entropy:
-        # Gemma3n has a different forward signature and config nesting than Gemma3.
-        # Avoid patching to Gemma3's causal_forward to prevent subtle errors.
-        logger.warning("fused_linear_cross_entropy is not supported for Gemma3n; ignoring this option.")
+        # Enable fused linear + CE for Gemma3n text-only.
+        # Patch class-level forward unless an instance is provided below.
+        modeling_gemma3n.Gemma3nForCausalLM.forward = gemma3n_lce_forward
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -1217,6 +1219,10 @@ def apply_liger_kernel_to_gemma3n_text(
                         _patch_rms_norm_module_for_gemma3n(decoder_layer.altup.router_norm)
                     if hasattr(decoder_layer, "laurel") and hasattr(decoder_layer.laurel, "post_laurel_norm"):
                         _patch_rms_norm_module_for_gemma3n(decoder_layer.laurel.post_laurel_norm)
+
+            # Patch instance forward for fused CE if requested and applicable.
+            if fused_linear_cross_entropy and isinstance(model, Gemma3nForCausalLM):
+                model.forward = MethodType(gemma3n_lce_forward, model)
 
         else:
             raise TypeError("The model must be Gemma3nForCausalLM.")
