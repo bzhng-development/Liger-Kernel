@@ -1078,7 +1078,7 @@ def apply_liger_kernel_to_gemma3n_text(
 
     # Import Gemma3n components from transformers if available
     from transformers.models.gemma3n import modeling_gemma3n
-    from transformers.models.gemma3n.modeling_gemma3n import Gemma3nDecoderLayer
+    from transformers.models.gemma3n.modeling_gemma3n import Gemma3nTextDecoderLayer
     from transformers.models.gemma3n.modeling_gemma3n import Gemma3nForCausalLM, Gemma3nTextModel
 
     from liger_kernel.transformers.gema3_rms import LigerRMSNormForGemma3
@@ -1120,7 +1120,7 @@ def apply_liger_kernel_to_gemma3n_text(
                 _patch_rms_norm_module_for_gemma3n(base_model.norm)
 
             for decoder_layer in base_model.layers:
-                decoder_layer: Gemma3nDecoderLayer
+                decoder_layer: Gemma3nTextDecoderLayer
                 if geglu:
                     _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
                 if rms_norm:
