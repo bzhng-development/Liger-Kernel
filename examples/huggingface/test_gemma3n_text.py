@@ -99,7 +99,7 @@ def main():
                 rms_norm=True,
                 geglu=True,
             )
-            print("[Info] Applied Liger Gemma3n text patch (RoPE, RMSNorm, GeGLU, fused CE)")
+            print("[Info] Applied Liger Gemma3n text patch (RoPE, RMSNorm, GeGLU)")
         except Exception as e:
             print("[Error] Failed to apply Liger Gemma3n text patch:", file=sys.stderr)
             print(e, file=sys.stderr)
@@ -119,13 +119,22 @@ def main():
         try:
             from liger_kernel.transformers import apply_liger_kernel_to_gemma3n_text
 
+            # Determine the text sub-module to patch for conditional generation models
+            target_model = None
+            if hasattr(model, "language_model"):
+                target_model = model.language_model
+            elif hasattr(model, "model") and hasattr(model.model, "language_model"):
+                target_model = model.model.language_model
+            else:
+                target_model = model
+
             apply_liger_kernel_to_gemma3n_text(
                 rope=True,
                 cross_entropy=False,
                 fused_linear_cross_entropy=False,
                 rms_norm=True,
                 geglu=True,
-                model=model,
+                model=target_model,
             )
             print("[Info] Patched Gemma3n model instance with Liger (text-only)")
         except Exception as e:

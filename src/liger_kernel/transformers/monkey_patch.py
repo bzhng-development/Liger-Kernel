@@ -1089,7 +1089,15 @@ def apply_liger_kernel_to_gemma3n_text(
     )
 
     if rope:
-        modeling_gemma3n.apply_rotary_pos_emb = liger_rotary_pos_emb
+        # Gemma3n's apply_rotary_pos_emb is called with a single tensor:
+        #   apply_rotary_pos_emb(x, cos, sin, position_ids=None, unsqueeze_dim=2)
+        # Liger's kernel expects (q, k, cos, sin, position_ids=None, unsqueeze_dim=1).
+        # Provide a thin adapter that applies RoPE to a single tensor and returns it.
+        def _liger_rotary_pos_emb_gemma3n(x, cos, sin, position_ids=None, unsqueeze_dim=2):
+            q_out, _ = liger_rotary_pos_emb(x, x, cos, sin, position_ids=position_ids, unsqueeze_dim=unsqueeze_dim)
+            return q_out
+
+        modeling_gemma3n.apply_rotary_pos_emb = _liger_rotary_pos_emb_gemma3n
 
     if rms_norm:
         # Gemma3n RMSNorm takes `dim` arg for q_norm/k_norm just like Gemma3
@@ -1121,12 +1129,15 @@ def apply_liger_kernel_to_gemma3n_text(
 
             for decoder_layer in base_model.layers:
                 decoder_layer: Gemma3nTextDecoderLayer
-                if geglu:
+                if geglu and hasattr(decoder_layer, "mlp"):
                     _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
                 if rms_norm:
-                    _patch_rms_norm_module_for_gemma3n(decoder_layer.input_layernorm)
-                    _patch_rms_norm_module_for_gemma3n(decoder_layer.post_attention_layernorm)
-                    # Pre/post FFN norms may exist depending on variant; patch if present
+                    # Common Gemma-style names
+                    if hasattr(decoder_layer, "input_layernorm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.input_layernorm)
+                    if hasattr(decoder_layer, "post_attention_layernorm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.post_attention_layernorm)
+                    # Optional FFN norms
                     if hasattr(decoder_layer, "pre_feedforward_layernorm"):
                         _patch_rms_norm_module_for_gemma3n(decoder_layer.pre_feedforward_layernorm)
                     if hasattr(decoder_layer, "post_feedforward_layernorm"):
