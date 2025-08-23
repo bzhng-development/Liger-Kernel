@@ -391,6 +391,30 @@ def revert_liger_kernel_to_gemma3_text(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_gemma3n_text(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Gemma3n (text-only).
+    """
+
+    from transformers.models.gemma3n import modeling_gemma3n
+    # Also revert any global cross-entropy hook that may have been applied
+    # via transformers.loss.loss_utils.nn to avoid tainting other tests/models.
+    try:
+        import torch
+        import torch.nn.functional as F
+        from transformers.loss.loss_utils import nn as loss_nn
+
+        loss_nn.functional.cross_entropy = F.cross_entropy
+    except Exception:
+        pass
+
+    importlib.reload(modeling_gemma3n)
+
+    model_config.model_class = modeling_gemma3n.Gemma3nForCausalLM
+
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_gemma3(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Gemma3.

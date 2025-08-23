@@ -5,6 +5,8 @@ from functools import partial
 from types import MethodType
 from typing import Callable
 
+import torch
+
 import transformers
 
 from packaging import version
@@ -12,7 +14,7 @@ from transformers import PreTrainedModel
 
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.functional import liger_cross_entropy
-from liger_kernel.transformers.geglu import LigerGEGLUMLP
+from liger_kernel.transformers.geglu import LigerGEGLUMLP, liger_geglu_sparse_forward
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
 from liger_kernel.transformers.model.gemma import lce_forward_deprecated as gemma_lce_forward_deprecated
@@ -969,7 +971,7 @@ def apply_liger_kernel_to_gemma3_text(
     rms_norm: bool = True,
     geglu: bool = True,
     model: PreTrainedModel = None,
-) -> None:
+    ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Gemma3
 
@@ -994,8 +996,8 @@ def apply_liger_kernel_to_gemma3_text(
     from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
     from transformers.models.gemma3.modeling_gemma3 import Gemma3TextModel
 
-    from liger_kernel.transformers.model.gemma3 import causal_forward
     from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma3
+    from liger_kernel.transformers.model.gemma3 import causal_forward
 
     _patch_rms_norm_module_for_gemma3 = partial(
         _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
@@ -1011,10 +1013,16 @@ def apply_liger_kernel_to_gemma3_text(
         modeling_gemma3.Gemma3MLP = LigerGEGLUMLP
 
     # Handle loss function
+    # Do NOT patch torch.nn.functional.cross_entropy globally for Gemma3n text.
+    # Gemma3n's evaluation/training loss is computed via the model's
+    # own loss_function or the fused linear+CE path in
+    # liger_kernel.transformers.model.gemma3n.causal_forward. Keeping a
+    # global hook can leak into other models/tests; so we ignore the
+    # `cross_entropy` flag here for Gemma3n.
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        logger.info(
+            "Gemma3n text: ignoring global cross_entropy patch; loss is handled via model.loss_function/fused path."
+        )
 
     if fused_linear_cross_entropy:
         if model is not None:
@@ -1047,6 +1055,265 @@ def apply_liger_kernel_to_gemma3_text(
 
         else:
             raise TypeError("The model must be Gemma3ForCausalLM.")
+
+
+def apply_liger_kernel_to_gemma3n_text(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = False,
+    rms_norm: bool = True,
+    geglu: bool = True,
+    altup: bool = True,
+    laurel: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Gemma3n (text-only).
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is False.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
+        altup (bool): Whether to use Liger's AltUp module. Default is True.
+        laurel (bool): Whether to use Liger's Laurel block. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    # Import Gemma3n components from transformers if available
+    from transformers.models.gemma3n import modeling_gemma3n
+    from transformers.models.gemma3n.modeling_gemma3n import Gemma3nTextDecoderLayer
+    from transformers.models.gemma3n.modeling_gemma3n import Gemma3nForCausalLM, Gemma3nTextModel
+
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma3n
+    from liger_kernel.transformers.altup import LigerGemma3nAltUp
+    from liger_kernel.transformers.model.gemma3n import causal_forward as gemma3n_lce_forward
+    from liger_kernel.transformers.rope import liger_gemma3n_apply_rotary_pos_emb
+
+    # Custom patcher for Gemma3n that respects no-scale norms (e.g., v_norm)
+    def _patch_rms_norm_module_for_gemma3n(module, eps=1e-6, casting_mode="gemma", in_place=False):
+        try:
+            import torch.nn as nn
+            has_parameter = isinstance(getattr(module, "weight", None), nn.Parameter)
+        except Exception:
+            has_parameter = True
+        # Use offset=0.0 for standard RMSNorm; offset=1.0 for no-scale norms
+        offset = 0.0 if has_parameter else 1.0
+        # Bind methods and attributes similar to _patch_rms_norm_module
+        if PEFT_AVAILABLE and isinstance(module, peft.utils.other.ModulesToSaveWrapper):
+            module.modules_to_save.default.offset = offset
+            module.modules_to_save.default.casting_mode = casting_mode
+            module.modules_to_save.default.variance_epsilon = (
+                getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+            )
+            module.modules_to_save.default.in_place = in_place
+            module.original_module.offset = offset
+            module.original_module.casting_mode = casting_mode
+            module.original_module.variance_epsilon = (
+                getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+            )
+            module.original_module.in_place = in_place
+            _bind_method_to_module(module.modules_to_save.default, "forward", LigerRMSNorm.forward)
+            _bind_method_to_module(module.modules_to_save.default, "extra_repr", LigerRMSNorm.extra_repr)
+            _bind_method_to_module(module.original_module, "forward", LigerRMSNorm.forward)
+            _bind_method_to_module(module.original_module, "extra_repr", LigerRMSNorm.extra_repr)
+            module.modules_to_save.default.__class__.__name__ = LigerRMSNorm.__name__
+            module.original_module.__class__.__name__ = LigerRMSNorm.__name__
+        else:
+            module.offset = offset
+            module.casting_mode = casting_mode
+            module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+            module.in_place = in_place
+            _bind_method_to_module(module, "forward", LigerRMSNorm.forward)
+            _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
+            module.__class__.__name__ = LigerRMSNorm.__name__
+
+    # Optionally patch RoPE for Gemma3n with a wrapper that preserves
+    # Gemma3n's broadcasting semantics while using Liger's fused kernel.
+    if rope:
+        modeling_gemma3n.apply_rotary_pos_emb = liger_gemma3n_apply_rotary_pos_emb
+
+    if rms_norm:
+        # Gemma3n: standard RMSNorm for learnable scales (offset=0.0) and
+        # unit-scale for no-scale norms (offset=1.0 with zero buffer).
+        modeling_gemma3n.Gemma3nRMSNorm = LigerRMSNormForGemma3n
+
+    # Ensure newly constructed models use Liger variants (AltUp/Laurel)
+    if altup and hasattr(modeling_gemma3n, "Gemma3nTextAltUp"):
+        modeling_gemma3n.Gemma3nTextAltUp = LigerGemma3nAltUp
+    if laurel:
+        try:
+            from liger_kernel.transformers.laurel import LigerGemma3nLaurelBlock
+
+            if hasattr(modeling_gemma3n, "Gemma3nTextLaurelBlock"):
+                modeling_gemma3n.Gemma3nTextLaurelBlock = LigerGemma3nLaurelBlock
+        except Exception:
+            pass
+
+    # Do not override the Gemma3n MLP class globally because Gemma3n may pass
+    # per-layer settings (e.g., intermediate_size lists or layer_idx) to the MLP constructor.
+    # We instead patch the instance's `mlp.forward` below to use the Liger kernel when
+    # activation sparsity is disabled for that layer.
+
+    # Handle loss function
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if fused_linear_cross_entropy:
+        # Enable fused linear + CE for Gemma3n text-only.
+        # Patch class-level forward unless an instance is provided below.
+        modeling_gemma3n.Gemma3nForCausalLM.forward = gemma3n_lce_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        if isinstance(model, Gemma3nForCausalLM) or isinstance(model, Gemma3nTextModel):
+            # get the base model from the model instance
+            base_model = model.model if isinstance(model, Gemma3nForCausalLM) else model
+
+            if rms_norm:
+                # Model-level final norm
+                _patch_rms_norm_module_for_gemma3n(base_model.norm)
+                # Per-layer projection norm (norms the [B, T, num_layers, per_layer_dim])
+                if hasattr(base_model, "per_layer_projection_norm"):
+                    _patch_rms_norm_module_for_gemma3n(base_model.per_layer_projection_norm)
+
+            # Try to fetch activation sparsity pattern
+            sparsity_pattern = None
+            try:
+                sparsity_pattern = getattr(base_model.config, "activation_sparsity_pattern", None)
+                if sparsity_pattern is None and hasattr(base_model.config, "text_config"):
+                    sparsity_pattern = getattr(base_model.config.text_config, "activation_sparsity_pattern", None)
+            except Exception:
+                sparsity_pattern = None
+
+            for idx, decoder_layer in enumerate(base_model.layers):
+                decoder_layer: Gemma3nTextDecoderLayer
+                # Patch MLP forward for all layers: use dense fused path when sparsity==0,
+                # and sparse path when sparsity>0.
+                if geglu:
+                    try:
+                        sparsity = 0.0
+                        if isinstance(sparsity_pattern, (list, tuple)) and idx < len(sparsity_pattern):
+                            sparsity = float(sparsity_pattern[idx])
+                        if hasattr(decoder_layer, "mlp"):
+                            if sparsity == 0.0:
+                                _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+                            else:
+                                # Set per-layer sparsity attribute for sparse forward
+                                setattr(decoder_layer.mlp, "activation_sparsity", sparsity)
+                                _bind_method_to_module(decoder_layer.mlp, "forward", liger_geglu_sparse_forward)
+                    except Exception as e:
+                        # Be conservative; skip if anything unexpected
+                        logger.warning(f"Failed to patch MLP forward for layer {idx}: {e}")
+                # Replace AltUp with Liger variant and copy weights if present
+                if altup and hasattr(decoder_layer, "altup"):
+                    try:
+                        old_alt = decoder_layer.altup
+                        new_alt = LigerGemma3nAltUp(base_model.config)
+                        # Copy linear weights if available
+                        for name in ("correction_coefs", "prediction_coefs", "modality_router"):
+                            if hasattr(old_alt, name) and hasattr(new_alt, name):
+                                getattr(new_alt, name).weight.data.copy_(getattr(old_alt, name).weight.data)
+                        # Router norm weights (if learnable)
+                        if hasattr(old_alt, "router_norm") and hasattr(new_alt, "router_norm"):
+                            old_rn = getattr(old_alt, "router_norm")
+                            new_rn = getattr(new_alt, "router_norm")
+                            if hasattr(old_rn, "weight") and hasattr(new_rn, "weight") and isinstance(
+                                getattr(old_rn, "weight"), torch.nn.Parameter
+                            ):
+                                new_rn.weight.data.copy_(old_rn.weight.data)
+                        # Correct output scale parameter
+                        if hasattr(old_alt, "correct_output_scale") and hasattr(new_alt, "correct_output_scale"):
+                            new_alt.correct_output_scale.data.copy_(old_alt.correct_output_scale.data)
+                        # Move to the same device/dtype as the previous module
+                        try:
+                            ref_param = None
+                            for n in ("modality_router", "prediction_coefs", "correction_coefs"):
+                                if hasattr(old_alt, n):
+                                    ref_param = getattr(old_alt, n).weight
+                                    break
+                            if ref_param is None and hasattr(base_model, "norm") and hasattr(base_model.norm, "weight"):
+                                ref_param = base_model.norm.weight
+                            if ref_param is not None:
+                                new_alt.to(device=ref_param.device, dtype=ref_param.dtype)
+                        except Exception:
+                            pass
+                        decoder_layer.altup = new_alt
+                    except Exception:
+                        pass
+                # Replace Laurel with Liger variant and copy weights if present
+                if laurel:
+                    try:
+                        from liger_kernel.transformers.laurel import LigerGemma3nLaurelBlock as _LigerLaurel
+
+                        if hasattr(decoder_layer, "laurel"):
+                            old_l = decoder_layer.laurel
+                            new_l = _LigerLaurel(base_model.config)
+                            if hasattr(old_l, "linear_left") and hasattr(new_l, "linear_left"):
+                                new_l.linear_left.weight.data.copy_(old_l.linear_left.weight.data)
+                            if hasattr(old_l, "linear_right") and hasattr(new_l, "linear_right"):
+                                new_l.linear_right.weight.data.copy_(old_l.linear_right.weight.data)
+                            if hasattr(old_l, "post_laurel_norm") and hasattr(new_l, "post_laurel_norm"):
+                                olpn = getattr(old_l, "post_laurel_norm")
+                                nlpn = getattr(new_l, "post_laurel_norm")
+                                if hasattr(olpn, "weight") and hasattr(nlpn, "weight") and isinstance(
+                                    getattr(olpn, "weight"), torch.nn.Parameter
+                                ):
+                                    nlpn.weight.data.copy_(olpn.weight.data)
+                            try:
+                                ref = old_l.linear_left.weight if hasattr(old_l, "linear_left") else base_model.norm.weight
+                                new_l.to(device=ref.device, dtype=ref.dtype)
+                            except Exception:
+                                pass
+                            decoder_layer.laurel = new_l
+                    except Exception:
+                        pass
+                if rms_norm:
+                    # Common Gemma-style names
+                    if hasattr(decoder_layer, "input_layernorm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.input_layernorm)
+                    if hasattr(decoder_layer, "post_attention_layernorm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.post_attention_layernorm)
+                    # Optional FFN norms
+                    if hasattr(decoder_layer, "pre_feedforward_layernorm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.pre_feedforward_layernorm)
+                    if hasattr(decoder_layer, "post_feedforward_layernorm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.post_feedforward_layernorm)
+                    # Post per-layer input norm on the residual branch
+                    if hasattr(decoder_layer, "post_per_layer_input_norm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.post_per_layer_input_norm)
+                    # q_norm/k_norm are Gemma-style RMSNorms
+                    if hasattr(decoder_layer, "self_attn") and hasattr(decoder_layer.self_attn, "q_norm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.self_attn.q_norm)
+                    if hasattr(decoder_layer, "self_attn") and hasattr(decoder_layer.self_attn, "k_norm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.self_attn.k_norm)
+                    # Gemma3n also normalizes value states; patch v_norm if present
+                    if hasattr(decoder_layer, "self_attn") and hasattr(decoder_layer.self_attn, "v_norm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.self_attn.v_norm)
+                    # AltUp and Laurel norms
+                    if hasattr(decoder_layer, "altup") and hasattr(decoder_layer.altup, "router_norm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.altup.router_norm)
+                    if hasattr(decoder_layer, "laurel") and hasattr(decoder_layer.laurel, "post_laurel_norm"):
+                        _patch_rms_norm_module_for_gemma3n(decoder_layer.laurel.post_laurel_norm)
+
+            # Patch instance forward for fused CE if requested and applicable.
+            if fused_linear_cross_entropy and isinstance(model, Gemma3nForCausalLM):
+                model.forward = MethodType(gemma3n_lce_forward, model)
+
+        else:
+            raise TypeError("The model must be Gemma3nForCausalLM.")
 
 
 def apply_liger_kernel_to_gemma3(
