@@ -84,7 +84,7 @@ def causal_forward(
             **loss_kwargs,
         )
     else:
-        # Standard logits path + optional CE
+        # Standard logits path + optional loss using HF's loss_function to match semantics
         logits = self.lm_head(kept_hidden_states)
         if final_logit_softcapping is not None:
             logits = logits / final_logit_softcapping
@@ -92,23 +92,8 @@ def causal_forward(
             logits = logits * final_logit_softcapping
 
         if labels is not None:
-            # Upcast for numerical stability when computing the loss
-            logits = logits.float()
-            shift_logits = logits[..., :-1, :]
-            shift_labels = labels[..., 1:]
-            if attention_mask is not None:
-                # Use input attention mask (2D) to select valid tokens; crop if needed (e.g., PrefixTuning)
-                shift_attention_mask = attention_mask[:, -shift_logits.shape[1] :].to(logits.device)
-                shift_logits = shift_logits[shift_attention_mask != 0].contiguous()
-                shift_labels = shift_labels[shift_attention_mask.to(shift_labels.device) != 0].contiguous()
-            else:
-                shift_logits = shift_logits.contiguous()
-                shift_labels = shift_labels.contiguous()
-
-            loss_fct = nn.CrossEntropyLoss()
-            flat_logits = shift_logits.view(-1, self.config.vocab_size)
-            flat_labels = shift_labels.view(-1).to(shift_logits.device)
-            loss = loss_fct(flat_logits, flat_labels)
+            # Defer to the model's built-in loss function to preserve HF behavior
+            loss = self.loss_function(logits, labels, self.vocab_size, **loss_kwargs)
 
     if not return_dict:
         output = (logits,) + outputs[1:]
@@ -121,4 +106,3 @@ def causal_forward(
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
     )
-
