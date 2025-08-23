@@ -573,7 +573,7 @@ if GEMMA3N_AVAILABLE:
             rope_local_base_freq=10000.0,
             attention_bias=False,
             attention_dropout=0.0,
-            sliding_window=None,
+            sliding_window=4096,
             layer_types=["full_attention"] * 4,
             final_logit_softcapping=None,
             altup_active_idx=0,
