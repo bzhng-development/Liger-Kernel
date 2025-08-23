@@ -1220,6 +1220,19 @@ def apply_liger_kernel_to_gemma3n_text(
                         # Correct output scale parameter
                         if hasattr(old_alt, "correct_output_scale") and hasattr(new_alt, "correct_output_scale"):
                             new_alt.correct_output_scale.data.copy_(old_alt.correct_output_scale.data)
+                        # Move to the same device/dtype as the previous module
+                        try:
+                            ref_param = None
+                            for n in ("modality_router", "prediction_coefs", "correction_coefs"):
+                                if hasattr(old_alt, n):
+                                    ref_param = getattr(old_alt, n).weight
+                                    break
+                            if ref_param is None and hasattr(base_model, "norm") and hasattr(base_model.norm, "weight"):
+                                ref_param = base_model.norm.weight
+                            if ref_param is not None:
+                                new_alt.to(device=ref_param.device, dtype=ref_param.dtype)
+                        except Exception:
+                            pass
                         decoder_layer.altup = new_alt
                     except Exception:
                         pass
