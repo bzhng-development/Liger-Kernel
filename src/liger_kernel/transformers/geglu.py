@@ -6,7 +6,7 @@ from liger_kernel.ops.geglu_sparse import gelu_and_mul_sparse
 try:
     from liger_kernel.ops.geglu_sparse_triton import geglu_sparse_forward as _triton_geglu_sparse_forward
     _HAS_TRITON_SPARSE = True
-except Exception:
+except ImportError:
     _HAS_TRITON_SPARSE = False
 
 
