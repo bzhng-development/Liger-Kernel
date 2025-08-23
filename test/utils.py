@@ -397,6 +397,16 @@ def revert_liger_kernel_to_gemma3n_text(model_config: MiniModelConfig):
     """
 
     from transformers.models.gemma3n import modeling_gemma3n
+    # Also revert any global cross-entropy hook that may have been applied
+    # via transformers.loss.loss_utils.nn to avoid tainting other tests/models.
+    try:
+        import torch
+        import torch.nn.functional as F
+        from transformers.loss.loss_utils import nn as loss_nn
+
+        loss_nn.functional.cross_entropy = F.cross_entropy
+    except Exception:
+        pass
 
     importlib.reload(modeling_gemma3n)
 

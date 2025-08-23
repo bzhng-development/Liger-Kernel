@@ -1013,10 +1013,16 @@ def apply_liger_kernel_to_gemma3_text(
         modeling_gemma3.Gemma3MLP = LigerGEGLUMLP
 
     # Handle loss function
+    # Do NOT patch torch.nn.functional.cross_entropy globally for Gemma3n text.
+    # Gemma3n's evaluation/training loss is computed via the model's
+    # own loss_function or the fused linear+CE path in
+    # liger_kernel.transformers.model.gemma3n.causal_forward. Keeping a
+    # global hook can leak into other models/tests; so we ignore the
+    # `cross_entropy` flag here for Gemma3n.
     if cross_entropy:
-        from transformers.loss.loss_utils import nn
-
-        nn.functional.cross_entropy = liger_cross_entropy
+        logger.info(
+            "Gemma3n text: ignoring global cross_entropy patch; loss is handled via model.loss_function/fused path."
+        )
 
     if fused_linear_cross_entropy:
         if model is not None:
