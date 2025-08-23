@@ -542,7 +542,7 @@ if GEMMA3_AVAILABLE:
         ),
     )
 
-if 'GEMMA3N_AVAILABLE' in globals() and GEMMA3N_AVAILABLE:
+if GEMMA3N_AVAILABLE:
     MINI_MODEL_SETUPS["mini_gemma3n_text"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_gemma3n_text,
         liger_kernel_patch_revert_func=revert_liger_kernel_to_gemma3n_text,
