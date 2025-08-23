@@ -131,16 +131,17 @@ class LigerGELUSparseMulFunction(torch.autograd.Function):
         # For non-tanh approximation or low-precision dtypes, fall back to
         # PyTorch recompute to ensure numerical parity with the reference.
         if approximate != "tanh" or gate.dtype != torch.float32:
-            # Fallback to PyTorch recompute path for non-tanh (currently unsupported)
-            gate_r = gate.detach().requires_grad_(True)
-            up_r = up.detach().requires_grad_(True)
-            mean = torch.mean(gate_r, dim=-1, keepdim=True)
-            std = torch.std(gate_r, dim=-1, keepdim=True, unbiased=False)
-            std_mult = _icdf_std_multiplier(sparsity, gate_r.device).to(gate_r.dtype)
-            cutoff = mean + std * std_mult
-            gate_sparse = F.relu(gate_r - cutoff)
-            act = F.gelu(gate_sparse, approximate=approximate)
-            out = act * up_r
+            # Fallback to PyTorch recompute path under autograd-enabled context
+            with torch.enable_grad():
+                gate_r = gate.detach().requires_grad_(True)
+                up_r = up.detach().requires_grad_(True)
+                mean = torch.mean(gate_r, dim=-1, keepdim=True)
+                std = torch.std(gate_r, dim=-1, keepdim=True, unbiased=False)
+                std_mult = _icdf_std_multiplier(sparsity, gate_r.device).to(gate_r.dtype)
+                cutoff = mean + std * std_mult
+                gate_sparse = F.relu(gate_r - cutoff)
+                act = F.gelu(gate_sparse, approximate=approximate)
+                out = act * up_r
             dgate, dup = torch.autograd.grad(out, (gate_r, up_r), grad_out, retain_graph=False, create_graph=False)
             return dgate, dup, None, None
 
