@@ -128,7 +128,9 @@ class LigerGELUSparseMulFunction(torch.autograd.Function):
         sparsity = ctx.sparsity
         approximate = ctx.approximate
 
-        if approximate != "tanh":
+        # For non-tanh approximation or low-precision dtypes, fall back to
+        # PyTorch recompute to ensure numerical parity with the reference.
+        if approximate != "tanh" or gate.dtype != torch.float32:
             # Fallback to PyTorch recompute path for non-tanh (currently unsupported)
             gate_r = gate.detach().requires_grad_(True)
             up_r = up.detach().requires_grad_(True)
