@@ -95,25 +95,13 @@ def causal_forward(
             logits = logits * final_logit_softcapping
 
         if labels is not None:
-            # Upcast for numerical stability when computing the CE loss.
-            logits = logits.float()
-            shift_logits = logits[..., :-1, :]
-            shift_labels = labels[..., 1:]
-            if attention_mask is not None:
-                # Use the 2D input attention mask to select valid tokens
-                # (crop if needed, e.g., PrefixTuning).
-                shift_attention_mask = attention_mask[:, -shift_logits.shape[1] :].to(logits.device)
-                shift_logits = shift_logits[shift_attention_mask != 0].contiguous()
-                shift_labels = shift_labels[shift_attention_mask.to(shift_labels.device) != 0].contiguous()
-            else:
-                shift_logits = shift_logits.contiguous()
-                shift_labels = shift_labels.contiguous()
-
-            loss_fct = nn.CrossEntropyLoss()
-            # Flatten using the actual class dimension from logits
-            flat_logits = shift_logits.reshape(-1, shift_logits.size(-1))
-            flat_labels = shift_labels.reshape(-1).to(shift_logits.device)
-            loss = loss_fct(flat_logits, flat_labels)
+            # Match HF semantics by using the model's loss_function. Also
+            # derive the vocab size from text_config when available to avoid
+            # mismatches on multimodal wrappers.
+            vocab_size = getattr(_cfg, "vocab_size", None)
+            if vocab_size is None:
+                vocab_size = self.lm_head.out_features
+            loss = self.loss_function(logits, labels, vocab_size, **loss_kwargs)
 
     if not return_dict:
         output = (logits,) + outputs[1:]
