@@ -1214,9 +1214,9 @@ def apply_liger_kernel_to_gemma3n_text(
                                 # Set per-layer sparsity attribute for sparse forward
                                 setattr(decoder_layer.mlp, "activation_sparsity", sparsity)
                                 _bind_method_to_module(decoder_layer.mlp, "forward", liger_geglu_sparse_forward)
-                    except Exception:
+                    except Exception as e:
                         # Be conservative; skip if anything unexpected
-                        pass
+                        logger.warning(f"Failed to patch MLP forward for layer {idx}: {e}")
                 # Replace AltUp with Liger variant and copy weights if present
                 if altup and hasattr(decoder_layer, "altup"):
                     try:
