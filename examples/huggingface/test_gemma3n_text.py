@@ -100,7 +100,7 @@ def main():
                 rms_norm=True,
                 geglu=True,
             )
-            print("[Info] Applied Liger Gemma3n text patch (RMSNorm + 3n-RoPE + fused CE)")
+            print("[Info] Applied Liger Gemma3n text patch (AltUp + RMSNorm + 3n-RoPE + fused CE)")
         except Exception as e:
             print("[Error] Failed to apply Liger Gemma3n text patch:", file=sys.stderr)
             print(e, file=sys.stderr)
@@ -144,7 +144,7 @@ def main():
                 geglu=True,
                 model=target_model,
             )
-            print("[Info] Patched Gemma3n model instance with Liger (text-only, 3n-RoPE + fused CE)")
+            print("[Info] Patched Gemma3n model instance with Liger (text-only, AltUp + 3n-RoPE + fused CE)")
         except Exception as e:
             print("[Warn] Failed to patch Gemma3n instance:", e, file=sys.stderr)
     load_s = time.time() - t0

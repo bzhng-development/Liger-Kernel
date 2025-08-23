@@ -5,6 +5,8 @@ from functools import partial
 from types import MethodType
 from typing import Callable
 
+import torch
+
 import transformers
 
 from packaging import version
@@ -1055,6 +1057,7 @@ def apply_liger_kernel_to_gemma3n_text(
     fused_linear_cross_entropy: bool = False,
     rms_norm: bool = True,
     geglu: bool = True,
+    altup: bool = True,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -1082,6 +1085,7 @@ def apply_liger_kernel_to_gemma3n_text(
     from transformers.models.gemma3n.modeling_gemma3n import Gemma3nForCausalLM, Gemma3nTextModel
 
     from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma3n
+    from liger_kernel.transformers.altup import LigerGemma3nAltUp
     from liger_kernel.transformers.model.gemma3n import causal_forward as gemma3n_lce_forward
     from liger_kernel.transformers.rope import liger_gemma3n_apply_rotary_pos_emb
 
@@ -1132,6 +1136,10 @@ def apply_liger_kernel_to_gemma3n_text(
         # Gemma3n: standard RMSNorm for learnable scales (offset=0.0) and
         # unit-scale for no-scale norms (offset=1.0 with zero buffer).
         modeling_gemma3n.Gemma3nRMSNorm = LigerRMSNormForGemma3n
+
+    # Ensure newly constructed models use Liger's AltUp wrapper (semantics parity with HF/vLLM)
+    if altup and hasattr(modeling_gemma3n, "Gemma3nTextAltUp"):
+        modeling_gemma3n.Gemma3nTextAltUp = LigerGemma3nAltUp
 
     # Do not override the Gemma3n MLP class globally because Gemma3n may pass
     # per-layer settings (e.g., intermediate_size lists or layer_idx) to the MLP constructor.
@@ -1191,6 +1199,29 @@ def apply_liger_kernel_to_gemma3n_text(
                                 _bind_method_to_module(decoder_layer.mlp, "forward", liger_geglu_sparse_forward)
                     except Exception:
                         # Be conservative; skip if anything unexpected
+                        pass
+                # Replace AltUp with Liger variant and copy weights if present
+                if altup and hasattr(decoder_layer, "altup"):
+                    try:
+                        old_alt = decoder_layer.altup
+                        new_alt = LigerGemma3nAltUp(base_model.config)
+                        # Copy linear weights if available
+                        for name in ("correction_coefs", "prediction_coefs", "modality_router"):
+                            if hasattr(old_alt, name) and hasattr(new_alt, name):
+                                getattr(new_alt, name).weight.data.copy_(getattr(old_alt, name).weight.data)
+                        # Router norm weights (if learnable)
+                        if hasattr(old_alt, "router_norm") and hasattr(new_alt, "router_norm"):
+                            old_rn = getattr(old_alt, "router_norm")
+                            new_rn = getattr(new_alt, "router_norm")
+                            if hasattr(old_rn, "weight") and hasattr(new_rn, "weight") and isinstance(
+                                getattr(old_rn, "weight"), torch.nn.Parameter
+                            ):
+                                new_rn.weight.data.copy_(old_rn.weight.data)
+                        # Correct output scale parameter
+                        if hasattr(old_alt, "correct_output_scale") and hasattr(new_alt, "correct_output_scale"):
+                            new_alt.correct_output_scale.data.copy_(old_alt.correct_output_scale.data)
+                        decoder_layer.altup = new_alt
+                    except Exception:
                         pass
                 if rms_norm:
                     # Common Gemma-style names
