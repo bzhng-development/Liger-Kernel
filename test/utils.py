@@ -391,6 +391,20 @@ def revert_liger_kernel_to_gemma3_text(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_gemma3n_text(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Gemma3n (text-only).
+    """
+
+    from transformers.models.gemma3n import modeling_gemma3n
+
+    importlib.reload(modeling_gemma3n)
+
+    model_config.model_class = modeling_gemma3n.Gemma3nForCausalLM
+
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_gemma3(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Gemma3.

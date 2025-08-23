@@ -21,6 +21,7 @@ from transformers.models.qwen2 import Qwen2ForCausalLM
 from liger_kernel.transformers import apply_liger_kernel_to_gemma
 from liger_kernel.transformers import apply_liger_kernel_to_gemma2
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3_text
+from liger_kernel.transformers import apply_liger_kernel_to_gemma3n_text
 from liger_kernel.transformers import apply_liger_kernel_to_glm4
 from liger_kernel.transformers import apply_liger_kernel_to_glm4v
 from liger_kernel.transformers import apply_liger_kernel_to_granite
@@ -46,6 +47,7 @@ from test.utils import get_topk
 from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
 from test.utils import revert_liger_kernel_to_gemma3_text
+from test.utils import revert_liger_kernel_to_gemma3n_text
 from test.utils import revert_liger_kernel_to_glm4
 from test.utils import revert_liger_kernel_to_glm4v
 from test.utils import revert_liger_kernel_to_granite
@@ -171,6 +173,14 @@ except ImportError:
     GEMMA3_AVAILABLE = False
 
 try:
+    from transformers.models.gemma3n.configuration_gemma3n import Gemma3nTextConfig
+    from transformers.models.gemma3n.modeling_gemma3n import Gemma3nForCausalLM
+
+    GEMMA3N_AVAILABLE = True
+except ImportError:
+    GEMMA3N_AVAILABLE = False
+
+try:
     # Smollm3 is only available in transformers>=4.53.0
     from transformers.models.smollm3.configuration_smollm3 import SmolLM3Config
     from transformers.models.smollm3.modeling_smollm3 import SmolLM3ForCausalLM
@@ -264,7 +274,7 @@ MINI_MODEL_SETUPS = {
             num_key_value_heads=None,  # defaults to num_attention_heads
             rms_norm_eps=1e-5,
             rope_theta=10000.0,
-            sliding_window=None,
+            sliding_window=4096,
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32064,
@@ -531,6 +541,48 @@ if GEMMA3_AVAILABLE:
             rope_theta=10000.0,  # 1000000
             attention_bias=False,
             attention_dropout=0.0,
+            attn_implementation="eager",
+        ),
+    )
+
+if GEMMA3N_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_gemma3n_text"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_gemma3n_text,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_gemma3n_text,
+        model_class=Gemma3nForCausalLM,
+        mini_model_config=Gemma3nTextConfig(
+            vocab_size=32000,
+            vocab_size_per_layer_input=32000,
+            hidden_size=1024,
+            hidden_size_per_layer_input=128,
+            intermediate_size=[2048] * 4,
+            num_hidden_layers=4,
+            num_attention_heads=4,
+            num_key_value_heads=1,
+            head_dim=256,
+            hidden_activation="gelu_pytorch_tanh",
+            max_position_embeddings=8192,
+            initializer_range=0.02,
+            rms_norm_eps=1e-6,
+            use_cache=True,
+            pad_token_id=0,
+            bos_token_id=2,
+            eos_token_id=1,
+            rope_theta=10000.0,
+            rope_scaling=None,
+            rope_local_base_freq=10000.0,
+            attention_bias=False,
+            attention_dropout=0.0,
+            sliding_window=None,
+            layer_types=["full_attention"] * 4,
+            final_logit_softcapping=None,
+            altup_active_idx=0,
+            altup_coef_clip=2.0,
+            altup_correct_scale=True,
+            altup_num_inputs=2,
+            num_kv_shared_layers=0,
+            laurel_rank=16,
+            activation_sparsity_pattern=[0.0] * 4,
             attn_implementation="eager",
         ),
     )
@@ -1398,6 +1450,25 @@ def run_mini_model(
                 pytest.mark.skipif(
                     not GEMMA3_AVAILABLE,
                     reason="Gemma3 not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_gemma3n_text",
+            32,
+            1e-5,
+            torch.bfloat16,
+            1e-2,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not GEMMA3N_AVAILABLE,
+                    reason="Gemma3n not available in this version of transformers",
                 ),
             ],
         ),
