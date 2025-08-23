@@ -1058,6 +1058,7 @@ def apply_liger_kernel_to_gemma3n_text(
     rms_norm: bool = True,
     geglu: bool = True,
     altup: bool = True,
+    laurel: bool = True,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -1072,6 +1073,8 @@ def apply_liger_kernel_to_gemma3n_text(
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
+        altup (bool): Whether to use Liger's AltUp module. Default is True.
+        laurel (bool): Whether to use Liger's Laurel block. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
@@ -1137,9 +1140,17 @@ def apply_liger_kernel_to_gemma3n_text(
         # unit-scale for no-scale norms (offset=1.0 with zero buffer).
         modeling_gemma3n.Gemma3nRMSNorm = LigerRMSNormForGemma3n
 
-    # Ensure newly constructed models use Liger's AltUp wrapper (semantics parity with HF/vLLM)
+    # Ensure newly constructed models use Liger variants (AltUp/Laurel)
     if altup and hasattr(modeling_gemma3n, "Gemma3nTextAltUp"):
         modeling_gemma3n.Gemma3nTextAltUp = LigerGemma3nAltUp
+    if laurel:
+        try:
+            from liger_kernel.transformers.laurel import LigerGemma3nLaurelBlock
+
+            if hasattr(modeling_gemma3n, "Gemma3nTextLaurelBlock"):
+                modeling_gemma3n.Gemma3nTextLaurelBlock = LigerGemma3nLaurelBlock
+        except Exception:
+            pass
 
     # Do not override the Gemma3n MLP class globally because Gemma3n may pass
     # per-layer settings (e.g., intermediate_size lists or layer_idx) to the MLP constructor.
@@ -1234,6 +1245,33 @@ def apply_liger_kernel_to_gemma3n_text(
                         except Exception:
                             pass
                         decoder_layer.altup = new_alt
+                    except Exception:
+                        pass
+                # Replace Laurel with Liger variant and copy weights if present
+                if laurel:
+                    try:
+                        from liger_kernel.transformers.laurel import LigerGemma3nLaurelBlock as _LigerLaurel
+
+                        if hasattr(decoder_layer, "laurel"):
+                            old_l = decoder_layer.laurel
+                            new_l = _LigerLaurel(base_model.config)
+                            if hasattr(old_l, "linear_left") and hasattr(new_l, "linear_left"):
+                                new_l.linear_left.weight.data.copy_(old_l.linear_left.weight.data)
+                            if hasattr(old_l, "linear_right") and hasattr(new_l, "linear_right"):
+                                new_l.linear_right.weight.data.copy_(old_l.linear_right.weight.data)
+                            if hasattr(old_l, "post_laurel_norm") and hasattr(new_l, "post_laurel_norm"):
+                                olpn = getattr(old_l, "post_laurel_norm")
+                                nlpn = getattr(new_l, "post_laurel_norm")
+                                if hasattr(olpn, "weight") and hasattr(nlpn, "weight") and isinstance(
+                                    getattr(olpn, "weight"), torch.nn.Parameter
+                                ):
+                                    nlpn.weight.data.copy_(olpn.weight.data)
+                            try:
+                                ref = old_l.linear_left.weight if hasattr(old_l, "linear_left") else base_model.norm.weight
+                                new_l.to(device=ref.device, dtype=ref.dtype)
+                            except Exception:
+                                pass
+                            decoder_layer.laurel = new_l
                     except Exception:
                         pass
                 if rms_norm:
