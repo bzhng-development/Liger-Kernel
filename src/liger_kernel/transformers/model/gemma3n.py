@@ -69,8 +69,10 @@ def causal_forward(
         shift_labels = loss_kwargs.get("shift_labels", None)
         skip_logits = self.training and (labels is not None or shift_labels is not None)
 
-    # Final logit soft-cap (text-only config stores this directly on self.config)
-    final_logit_softcapping = getattr(self.config, "final_logit_softcapping", None)
+    # Final logit soft-cap: read from text_config when present to support
+    # both text-only and multimodal configs.
+    _cfg = getattr(self.config, "text_config", self.config)
+    final_logit_softcapping = getattr(_cfg, "final_logit_softcapping", None)
 
     if skip_logits:
         # Fused linear + CE, no logits materialization
@@ -84,7 +86,8 @@ def causal_forward(
             **loss_kwargs,
         )
     else:
-        # Standard logits path + optional loss using HF's loss_function to match semantics
+        # Standard logits path + optional CE. Use the actual logits size
+        # for the class dimension to avoid config/vocab mismatches.
         logits = self.lm_head(kept_hidden_states)
         if final_logit_softcapping is not None:
             logits = logits / final_logit_softcapping
@@ -92,8 +95,25 @@ def causal_forward(
             logits = logits * final_logit_softcapping
 
         if labels is not None:
-            # Defer to the model's built-in loss function to preserve HF behavior
-            loss = self.loss_function(logits, labels, self.vocab_size, **loss_kwargs)
+            # Upcast for numerical stability when computing the CE loss.
+            logits = logits.float()
+            shift_logits = logits[..., :-1, :]
+            shift_labels = labels[..., 1:]
+            if attention_mask is not None:
+                # Use the 2D input attention mask to select valid tokens
+                # (crop if needed, e.g., PrefixTuning).
+                shift_attention_mask = attention_mask[:, -shift_logits.shape[1] :].to(logits.device)
+                shift_logits = shift_logits[shift_attention_mask != 0].contiguous()
+                shift_labels = shift_labels[shift_attention_mask.to(shift_labels.device) != 0].contiguous()
+            else:
+                shift_logits = shift_logits.contiguous()
+                shift_labels = shift_labels.contiguous()
+
+            loss_fct = nn.CrossEntropyLoss()
+            # Flatten using the actual class dimension from logits
+            flat_logits = shift_logits.reshape(-1, shift_logits.size(-1))
+            flat_labels = shift_labels.reshape(-1).to(shift_logits.device)
+            loss = loss_fct(flat_logits, flat_labels)
 
     if not return_dict:
         output = (logits,) + outputs[1:]
